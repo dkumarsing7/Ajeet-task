@@ -1,0 +1,203 @@
+/* ========================================================================= */
+/* Program Name : EXTRPGCL                                                   */
+/* Description  : Command Processing Program (CPP) for EXTRPGSRC Command     */
+/* Language     : ILE CL (CLLE)                                              */
+/* Author       : IBM i Extraction Utility Team                              */
+/*                                                                           */
+/* Responsibilities:                                                         */
+/* 1. Resolves output library (*CURLIB -> current job library or QGPL).      */
+/* 2. Verifies output physical file exists and handles CLEAR(*YES).          */
+/* 3. Coordinates independent extraction loop for each specified library.    */
+/* 4. Executes DSPFD to extract member catalog into QTEMP/QAFDMBL.           */
+/* 5. Invokes RPGLE extraction engine (EXTRPGRG) per library.                */
+/* 6. Formats and sends summary completion report.                           */
+/* ========================================================================= */
+
+             PGM        PARM(&LIBLIST &OUTLIB_IN &OUTFILE &CLEAR)
+
+             /* ----------------------------------------------------------- */
+             /* Parameter Declarations                                       */
+             /* ----------------------------------------------------------- */
+             DCL        VAR(&LIBLIST)   TYPE(*CHAR) LEN(102)
+             DCL        VAR(&OUTLIB_IN) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&OUTFILE)   TYPE(*CHAR) LEN(10)
+             DCL        VAR(&CLEAR)     TYPE(*CHAR) LEN(4)
+
+             /* ----------------------------------------------------------- */
+             /* List Unpacking Declarations                                  */
+             /* ----------------------------------------------------------- */
+             DCL        VAR(&LIB_CNT)   TYPE(*INT)  LEN(2) STG(*DEFINED) +
+                          DEFVAR(&LIBLIST 1)
+             DCL        VAR(&IDX)       TYPE(*INT)  LEN(4)
+             DCL        VAR(&OFFSET)    TYPE(*INT)  LEN(4)
+             DCL        VAR(&CURLIB)    TYPE(*CHAR) LEN(10)
+             DCL        VAR(&OUTLIB)    TYPE(*CHAR) LEN(10)
+
+             /* ----------------------------------------------------------- */
+             /* Statistics & Tracking Variables                              */
+             /* ----------------------------------------------------------- */
+             DCL        VAR(&TOT_MBRS)  TYPE(*INT)  LEN(4) VALUE(0)
+             DCL        VAR(&TOT_RECS)  TYPE(*INT)  LEN(4) VALUE(0)
+             DCL        VAR(&LIBS_OK)   TYPE(*INT)  LEN(4) VALUE(0)
+             DCL        VAR(&LIBS_ERR)  TYPE(*INT)  LEN(4) VALUE(0)
+
+             /* ----------------------------------------------------------- */
+             /* RPGLE Interface Variables                                    */
+             /* ----------------------------------------------------------- */
+             DCL        VAR(&RET_MBRS)  TYPE(*INT)  LEN(4) VALUE(0)
+             DCL        VAR(&RET_RECS)  TYPE(*INT)  LEN(4) VALUE(0)
+             DCL        VAR(&RET_STAT)  TYPE(*CHAR) LEN(10)
+
+             /* ----------------------------------------------------------- */
+             /* Formatting & Message Variables                               */
+             /* ----------------------------------------------------------- */
+             DCL        VAR(&CHAR_OK)   TYPE(*CHAR) LEN(4)
+             DCL        VAR(&CHAR_ERR)  TYPE(*CHAR) LEN(4)
+             DCL        VAR(&CHAR_MBRS) TYPE(*CHAR) LEN(8)
+             DCL        VAR(&CHAR_RECS) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&SUMMARY)   TYPE(*CHAR) LEN(256)
+             DCL        VAR(&MSGDTA)    TYPE(*CHAR) LEN(256)
+
+             /* ----------------------------------------------------------- */
+             /* 1. Resolve Output Library                                    */
+             /* ----------------------------------------------------------- */
+             IF         COND(&OUTLIB_IN = '*CURLIB' *OR &OUTLIB_IN = ' ') THEN(DO)
+                RTVJOBA    CURLIB(&OUTLIB)
+                IF         COND(&OUTLIB = '*NONE') THEN(CHGVAR VAR(&OUTLIB) VALUE('QGPL'))
+             ENDDO
+             ELSE       CMD(CHGVAR VAR(&OUTLIB) VALUE(&OUTLIB_IN))
+
+             /* ----------------------------------------------------------- */
+             /* 2. Verify Output Physical File Exists                        */
+             /* ----------------------------------------------------------- */
+             CHKOBJ     OBJ(&OUTLIB/&OUTFILE) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                CHGVAR     VAR(&MSGDTA) VALUE('Output file ' *CAT &OUTFILE *TCAT +
+                             ' not found in library ' *CAT &OUTLIB *TCAT +
+                             '. Please create it using CRTPF or RUNSQLSTM first.')
+                SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                             MSGTYPE(*ESCAPE)
+             ENDDO
+
+             /* ----------------------------------------------------------- */
+             /* 3. Handle CLEAR(*YES)                                        */
+             /* ----------------------------------------------------------- */
+             IF         COND(&CLEAR = '*YES') THEN(DO)
+                CLRPFM     FILE(&OUTLIB/&OUTFILE)
+                MONMSG     MSGID(CPF3141) /* Member empty or already clear */
+                MONMSG     MSGID(CPF0000) EXEC(DO)
+                   CHGVAR     VAR(&MSGDTA) VALUE('Failed to clear output file ' +
+                                *CAT &OUTLIB *TCAT '/' *CAT &OUTFILE *TCAT '.')
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                                MSGTYPE(*ESCAPE)
+                ENDDO
+                SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                             MSGDTA('Output file ' *CAT &OUTLIB *TCAT '/' *CAT +
+                             &OUTFILE *TCAT ' cleared.') MSGTYPE(*INFO)
+             ENDDO
+
+             /* ----------------------------------------------------------- */
+             /* 4. Process Each Input Library Independently                 */
+             /* ----------------------------------------------------------- */
+             DOFOR      VAR(&IDX) FROM(1) TO(&LIB_CNT)
+                CHGVAR     VAR(&OFFSET) VALUE(3 + ((&IDX - 1) * 10))
+                CHGVAR     VAR(&CURLIB) VALUE(%SST(&LIBLIST &OFFSET 10))
+
+                SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                             MSGDTA('Processing source library (' *CAT +
+                             %CHAR(&IDX) *TCAT '/' *CAT %CHAR(&LIB_CNT) +
+                             *TCAT '): ' *CAT &CURLIB) MSGTYPE(*INFO)
+
+                /* Reset per-library return values */
+                CHGVAR     VAR(&RET_MBRS) VALUE(0)
+                CHGVAR     VAR(&RET_RECS) VALUE(0)
+                CHGVAR     VAR(&RET_STAT) VALUE('          ')
+
+                /* -------------------------------------------------------- */
+                /* Step 4a: Extract member catalog into QTEMP/QAFDMBL       */
+                /* -------------------------------------------------------- */
+                DLTF       FILE(QTEMP/QAFDMBL)
+                MONMSG     MSGID(CPF2105) /* Object not found in QTEMP is normal */
+
+                DSPFD      FILE(&CURLIB/*ALL) TYPE(*MBRLIST) OUTPUT(*OUTFILE) +
+                             OUTFILE(QTEMP/QAFDMBL) OUTMBR(*FIRST *REPLACE)
+                MONMSG     MSGID(CPF3012 CPF3014 CPF3033) EXEC(DO)
+                   /* Library contains no database files or no members */
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                                MSGDTA('Library ' *CAT &CURLIB *TCAT +
+                                ' contains no eligible database members.') +
+                                MSGTYPE(*INFO)
+                   CHGVAR     VAR(&LIBS_OK) VALUE(&LIBS_OK + 1)
+                   GOTO       CMDLBL(NEXTLIB)
+                ENDDO
+                MONMSG     MSGID(CPF0000) EXEC(DO)
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                                MSGDTA('Error inspecting file members in library ' +
+                                *CAT &CURLIB *TCAT '.') MSGTYPE(*DIAG)
+                   CHGVAR     VAR(&LIBS_ERR) VALUE(&LIBS_ERR + 1)
+                   GOTO       CMDLBL(NEXTLIB)
+                ENDDO
+
+                /* -------------------------------------------------------- */
+                /* Step 4b: Invoke RPGLE Extraction Engine                  */
+                /* -------------------------------------------------------- */
+                CALL       PGM(EXTRPGRG) PARM(&CURLIB &OUTLIB &OUTFILE +
+                             &RET_MBRS &RET_RECS &RET_STAT)
+                MONMSG     MSGID(CPF0000) EXEC(DO)
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                                MSGDTA('Error executing RPG extraction engine for library ' +
+                                *CAT &CURLIB *TCAT '.') MSGTYPE(*DIAG)
+                   CHGVAR     VAR(&LIBS_ERR) VALUE(&LIBS_ERR + 1)
+                   GOTO       CMDLBL(NEXTLIB)
+                ENDDO
+
+                /* -------------------------------------------------------- */
+                /* Step 4c: Check RPGLE Status & Accumulate Metrics         */
+                /* -------------------------------------------------------- */
+                IF         COND(&RET_STAT = '*OK') THEN(DO)
+                   CHGVAR     VAR(&LIBS_OK)  VALUE(&LIBS_OK + 1)
+                   CHGVAR     VAR(&TOT_MBRS) VALUE(&TOT_MBRS + &RET_MBRS)
+                   CHGVAR     VAR(&TOT_RECS) VALUE(&TOT_RECS + &RET_RECS)
+
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                                MSGDTA('Library ' *CAT &CURLIB *TCAT +
+                                ': Extracted ' *CAT %CHAR(&RET_MBRS) *TCAT +
+                                ' members (' *CAT %CHAR(&RET_RECS) *TCAT +
+                                ' records).') MSGTYPE(*INFO)
+                ENDDO
+                ELSE       CMD(DO)
+                   CHGVAR     VAR(&LIBS_ERR) VALUE(&LIBS_ERR + 1)
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                                MSGDTA('Library ' *CAT &CURLIB *TCAT +
+                                ': Extraction reported status ' *CAT &RET_STAT) +
+                                MSGTYPE(*DIAG)
+                ENDDO
+
+ NEXTLIB:
+             ENDDO
+
+             /* ----------------------------------------------------------- */
+             /* 5. Clean up temporary files in QTEMP                        */
+             /* ----------------------------------------------------------- */
+             DLTF       FILE(QTEMP/QAFDMBL)
+             MONMSG     MSGID(CPF0000)
+
+             /* ----------------------------------------------------------- */
+             /* 6. Send Final Summary Completion Message                    */
+             /* ----------------------------------------------------------- */
+             CHGVAR     VAR(&CHAR_OK)   VALUE(%CHAR(&LIBS_OK))
+             CHGVAR     VAR(&CHAR_ERR)  VALUE(%CHAR(&LIBS_ERR))
+             CHGVAR     VAR(&CHAR_MBRS) VALUE(%CHAR(&TOT_MBRS))
+             CHGVAR     VAR(&CHAR_RECS) VALUE(%CHAR(&TOT_RECS))
+
+             CHGVAR     VAR(&SUMMARY) VALUE('EXTRPGSRC completed. Libraries OK: ' +
+                          *CAT &CHAR_OK *TCAT ', Failed: ' *CAT &CHAR_ERR *TCAT +
+                          '. Extracted ' *CAT &CHAR_MBRS *TCAT ' members (' *CAT +
+                          &CHAR_RECS *TCAT ' records) into ' *CAT &OUTLIB *TCAT +
+                          '/' *CAT &OUTFILE *TCAT '.')
+
+             SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&SUMMARY) +
+                          MSGTYPE(*COMP)
+
+             RETURN
+             ENDPGM

@@ -1,0 +1,14 @@
+     A* =================================================================
+     A* File Name   : EXTRPGPF
+     A* Description : Consolidated RPG Extracted Source Records PF
+     A* Format Name : EXTRPGR
+     A* Author      : IBM i Extraction Utility Team
+     A* =================================================================
+     A          R EXTRPGR                   TEXT('Consolidated RPG Source Record')
+     A            SRCLIB        10A         COLHDG('Source' 'Library')
+     A            SRCFILE       10A         COLHDG('Source' 'File')
+     A            SRCMBR        10A         COLHDG('Source' 'Member')
+     A            SRCTYPE       10A         COLHDG('Source' 'Type')
+     A            SRCSEQ         6S 2       COLHDG('Source' 'Seq')
+     A            SRCDAT         6S 0       COLHDG('Source' 'Date')
+     A            SRCDTA       256A         COLHDG('Source' 'Data')
