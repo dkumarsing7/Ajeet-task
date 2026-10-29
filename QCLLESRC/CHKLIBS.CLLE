@@ -7,26 +7,18 @@
 /* Purpose:                                                                  */
 /* Validates that all entered libraries exist and are accessible before the  */
 /* Command Processing Program (EXTRPGCL) is invoked.                         */
-/*                                                                           */
-/* Signaling:                                                                */
-/* Sends CPD0006 (*DIAG) for each invalid library and raises CPF0002         */
-/* (*ESCAPE) to instruct the OS/400 Command Analyzer to halt execution.       */
 /* ========================================================================= */
 
              PGM        PARM(&LIBLIST &OUTLIB &OUTFILE &CLEAR)
 
-             /* ----------------------------------------------------------- */
-             /* Parameter Declarations                                       */
-             /* ----------------------------------------------------------- */
+             /* Parameter Declarations */
              DCL        VAR(&LIBLIST)  TYPE(*CHAR) LEN(102)
              DCL        VAR(&OUTLIB)   TYPE(*CHAR) LEN(10)
              DCL        VAR(&OUTFILE)  TYPE(*CHAR) LEN(10)
              DCL        VAR(&CLEAR)    TYPE(*CHAR) LEN(4)
 
-             /* ----------------------------------------------------------- */
-             /* Work Variables                                               */
-             /* ----------------------------------------------------------- */
-             /* &LIB_CNT maps to the first 2 bytes of &LIBLIST (element count)*/
+             /* Work Variables */
+             /* Map &LIB_CNT to the first 2 bytes of &LIBLIST */
              DCL        VAR(&LIB_CNT)  TYPE(*INT)  LEN(2) STG(*DEFINED) +
                           DEFVAR(&LIBLIST 1)
              DCL        VAR(&IDX)      TYPE(*INT)  LEN(4)
@@ -35,9 +27,7 @@
              DCL        VAR(&HASERROR) TYPE(*LGL)  VALUE('0')
              DCL        VAR(&MSGDTA)   TYPE(*CHAR) LEN(256)
 
-             /* ----------------------------------------------------------- */
-             /* 1. Validate Input Libraries (1 to 10 entries)               */
-             /* ----------------------------------------------------------- */
+             /* 1. Validate Input Libraries (1 to 10 entries) */
              DOFOR      VAR(&IDX) FROM(1) TO(&LIB_CNT)
                 /* Calculate starting position for current 10-char library */
                 CHGVAR     VAR(&OFFSET) VALUE(3 + ((&IDX - 1) * 10))
@@ -46,7 +36,6 @@
                 /* Verify library exists */
                 CHKOBJ     OBJ(&CURLIB) OBJTYPE(*LIB)
                 MONMSG     MSGID(CPF9801) EXEC(DO)
-                   /* CPD0006 requires 4-byte padding ('0000') + message text */
                    CHGVAR     VAR(&MSGDTA) VALUE('0000Library ' *CAT +
                                 &CURLIB *TCAT ' does not exist.')
                    SNDPGMMSG  MSGID(CPD0006) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
@@ -63,9 +52,7 @@
                 ENDDO
              ENDDO
 
-             /* ----------------------------------------------------------- */
-             /* 2. Validate Output Library (if specified and not *CURLIB)   */
-             /* ----------------------------------------------------------- */
+             /* 2. Validate Output Library (if specified and not *CURLIB) */
              IF         COND(&OUTLIB *NE '*CURLIB' *AND &OUTLIB *NE ' ') THEN(DO)
                 CHKOBJ     OBJ(&OUTLIB) OBJTYPE(*LIB)
                 MONMSG     MSGID(CPF9801) EXEC(DO)
@@ -85,11 +72,8 @@
                 ENDDO
              ENDDO
 
-             /* ----------------------------------------------------------- */
-             /* 3. Signal Validation Status to Command Analyzer             */
-             /* ----------------------------------------------------------- */
+             /* 3. Signal Validation Status to Command Analyzer */
              IF         COND(&HASERROR) THEN(DO)
-                /* CPF0002 tells OS/400 Command Analyzer that validation failed*/
                 SNDPGMMSG  MSGID(CPF0002) MSGF(QCPFMSG) MSGTYPE(*ESCAPE)
              ENDDO
 

@@ -1,172 +1,154 @@
 **FREE
-// =========================================================================
-// Program Name : EXTRPGRG
-// Description  : RPG Source Extraction & Sizing Metrics Engine
-// Language     : Fully Free-Form ILE RPG with Embedded SQL (SQLRPGLE)
-// Author       : IBM i Extraction Utility Team
-//
-// Key Capabilities:
-// 1. Reads member catalog from &OUTLIB/&peLib (permanent table named after
-//    the library being processed, e.g., OUTLIB/ERP).
-// 2. Evaluates member eligibility based on source type (MLSEU2).
-// 3. Dynamically aliases each eligible member via DB2 ALIAS in QTEMP.
-// 4. Inserts full source records into consolidated PF (EXTRPGPF).
-// 5. Analyzes each source line to classify as Executable vs Non-Executable:
-//    - C-specs and free-form operational statements -> Executable
-//    - Comments (* or //), blank lines, H/F/D/I/O specs -> Non-Executable
-// 6. Writes member metrics into PF2 (EXTRPGDTL):
-//    SRCLIB, SRCFILE, SRCMBR, SRCTYPE, TOTLINES, EXELINES, NONEXELIN
-// 7. Writes library summary metrics into PF1 (EXTRPGSUM):
-//    LIBNAME, OBJCNT, MBRCNT, TOTLINES, EXELINES, NONEXELIN
-// =========================================================================
+// PROCEDURE LOG:
+//----------------------------------------------------------------------------------//
+// Procedure Name               | Procedure Description                             //
+//------------------------------|---------------------------------------------------//
+// chkEligibleType              | Verify member source type qualifies for extract   //
+// chkExecutableLine            | Classify statement as executable or non-executable//
+//----------------------------------------------------------------------------------//
+// MODIFICATION LOG:
+//----------------------------------------------------------------------------------//
+// Date     | Mod_ID | Developer   | Case and Description                           //
+//----------|--------|-------------|------------------------------------------------//
+// 29/10/26 | 0001   | Antigravity | Implement Enterprise Standards and Metrics     //
+//----------------------------------------------------------------------------------//
 
-ctl-opt dftactgrp(*no) actgrp(*caller) option(*srcstmt:*nodebugio);
+ctl-opt copyright('Programmers.io @ 2022');
+ctl-opt option(*nodebugio: *srcstmt: *nounref);
 
-// -------------------------------------------------------------------------
-// Program Interface (PI)
-// -------------------------------------------------------------------------
+// Program Interface
 dcl-pi EXTRPGRG;
-  peLib      char(10) const;
-  peOutLib   char(10) const;
-  peOutFile  char(10) const;
-  peMbrCount int(10);
-  peRecCount int(10);
-  peStatus   char(10);
+  upLib        char(10) const;
+  upOutLib     char(10) const;
+  upOutFile    char(10) const;
+  upMbrCount   packed(10:0);
+  upRecCount   packed(10:0);
+  upStatus     char(10);
 end-pi;
 
-// -------------------------------------------------------------------------
-// Internal Prototypes
-// -------------------------------------------------------------------------
-dcl-pr isEligibleType ind;
-  pSourceType char(10) const;
+// Procedure Prototypes
+dcl-pr chkEligibleType ind;
+  upSourceType char(10) const;
 end-pr;
 
-dcl-pr isExecutableLine ind;
-  pSrcDta  varchar(256) const;
-  pSrcType char(10)     const;
+dcl-pr chkExecutableLine ind;
+  upSourceData varchar(256) const;
+  upSourceType char(10)      const;
 end-pr;
 
-// -------------------------------------------------------------------------
-// Working Variables
-// -------------------------------------------------------------------------
-dcl-s srcFile         char(10);
-dcl-s srcMbr          char(10);
-dcl-s srcType         char(10);
-dcl-s srcDta          varchar(256);
-dcl-s lastFile        char(10) value('');
+// Data Structure Declarations
+dcl-ds udMbrDtl;
+  usFile       char(10) inz;
+  usName       char(10) inz;
+  usType       char(10) inz;
+end-ds;
 
-// Member-level counters (for PF2: EXTRPGDTL)
-dcl-s mbrTotLines     int(10);
-dcl-s mbrExeLines     int(10);
-dcl-s mbrNonExeLines  int(10);
+// Character and Varchar Work Variables
+dcl-s uwSourceData   varchar(256)  inz;
+dcl-s uwSqlStmt      varchar(1000) inz;
+dcl-s uwSqlAlias     varchar(500)  inz;
+dcl-s uwSqlInsPf     varchar(1000) inz;
+dcl-s uwSqlInsDtl    varchar(1000) inz;
+dcl-s uwSqlInsSum    varchar(1000) inz;
+dcl-s uwLastFile     char(10)      inz;
 
-// Library-level counters (for PF1: EXTRPGSUM)
-dcl-s libObjCount     int(10) value(0);
-dcl-s libMbrCount     int(10) value(0);
-dcl-s libTotLines     int(10) value(0);
-dcl-s libExeLines     int(10) value(0);
-dcl-s libNonExeLines  int(10) value(0);
+// Indicator Work Variables
+dcl-s uwIsEligible   ind inz(*off);
+dcl-s uwIsExecLine   ind inz(*off);
 
-// Dynamic SQL statements
-dcl-s sqlMbrStmt      varchar(512);
-dcl-s sqlCreate       varchar(512);
-dcl-s sqlInsertPf     varchar(1024);
-dcl-s sqlInsertDtl    varchar(1024);
-dcl-s sqlInsertSum    varchar(1024);
+// Numeric and Packed Work Variables
+dcl-s uwTotLines     packed(10:0) inz(0);
+dcl-s uwExeLines     packed(10:0) inz(0);
+dcl-s uwNonExeLines  packed(10:0) inz(0);
+dcl-s uwLibObjCount  packed(10:0) inz(0);
+dcl-s uwLibMbrCount  packed(10:0) inz(0);
+dcl-s uwLibTotLines  packed(10:0) inz(0);
+dcl-s uwLibExeLines  packed(10:0) inz(0);
+dcl-s uwLibNonExe    packed(10:0) inz(0);
 
-// Initialize return values
-peMbrCount = 0;
-peRecCount = 0;
-peStatus   = '*OK';
+// Initialize return metrics
+upMbrCount = 0;
+upRecCount = 0;
+upStatus   = '*OK';
 
-// Configure SQL session
+// Configure embedded SQL environment
 exec sql set option commit = *none,
                     datfmt = *iso,
                     closqlcsr = *endactgrp;
 
 monitor;
 
-  // -----------------------------------------------------------------------
-  // 1. Declare and Open Cursor Over &OUTLIB/peLib (Table named after peLib)
-  //    Selects only Source physical files (MLFTYP = 'S')
-  // -----------------------------------------------------------------------
-  sqlMbrStmt = 'SELECT MLFILE, MLNAME, MLSEU2 ' +
-               'FROM ' + %trim(peOutLib) + '/' + %trim(peLib) + ' ' +
-               'WHERE MLFTYP = ''S'' ' +
-               'ORDER BY MLFILE, MLNAME';
+  // Prepare dynamic SQL to read member catalog from OUTLIB named after upLib
+  uwSqlStmt = 'SELECT MLFILE, MLNAME, MLSEU2 ' +
+              'FROM ' + %trim(upOutLib) + '/' + %trim(upLib) + ' ' +
+              'WHERE MLFTYP = ''S'' ' +
+              'ORDER BY MLFILE, MLNAME';
 
-  exec sql prepare sMbrStmt from :sqlMbrStmt;
+  exec sql prepare sMbrCatalog from :uwSqlStmt;
   if (sqlcode < 0);
-    peStatus = '*ERR_PREP';
+    upStatus = '*ERR_PREP';
     return;
   endif;
 
-  exec sql declare cMbrCatalog cursor for sMbrStmt;
+  exec sql declare cMbrCatalog cursor for sMbrCatalog;
   exec sql open cMbrCatalog;
 
   if (sqlcode < 0);
-    peStatus = '*ERR_OPEN';
+    upStatus = '*ERR_OPEN';
     return;
   endif;
 
-  // -----------------------------------------------------------------------
-  // 2. Fetch and Process Each Discovered Member
-  // -----------------------------------------------------------------------
+  // Process each discovered member from catalog
   dow (1 = 1);
 
-    exec sql fetch next from cMbrCatalog
-      into :srcFile, :srcMbr, :srcType;
+    exec sql fetch next from cMbrCatalog into :udMbrDtl;
 
     if (sqlcode <> 0);
-      leave; // EOF or error
+      leave;
     endif;
 
-    // Filter for eligible RPG types (RPGLE, SQLRPGLE, RPG, SQLRPG, RPG38, RPGP)
-    if not isEligibleType(srcType);
-      iter; // Skip non-RPG types (e.g., CLP, CLLE, DDS, TXT, CBL)
+    // Verify if source type is eligible RPG member
+    uwIsEligible = chkEligibleType(usType);
+    if (not uwIsEligible);
+      iter;
     endif;
 
-    // Track distinct source physical files (objects) processed
-    if (srcFile <> lastFile);
-      libObjCount += 1;
-      lastFile = srcFile;
+    // Increment object count on new file boundary
+    if (usFile <> uwLastFile);
+      uwLibObjCount += 1;
+      uwLastFile = usFile;
     endif;
 
     // Reset member-level counters
-    mbrTotLines    = 0;
-    mbrExeLines    = 0;
-    mbrNonExeLines = 0;
+    uwTotLines    = 0;
+    uwExeLines    = 0;
+    uwNonExeLines = 0;
 
-    // ---------------------------------------------------------------------
-    // 3. Create Dynamic SQL Alias in QTEMP for Member
-    // ---------------------------------------------------------------------
-    sqlCreate = 'CREATE OR REPLACE ALIAS QTEMP.CURSRCMBR FOR "' +
-                %trim(peLib) + '"."' +
-                %trim(srcFile) + '" ("' +
-                %trim(srcMbr) + '")';
+    // Create dynamic SQL alias in QTEMP for member
+    uwSqlAlias = 'CREATE OR REPLACE ALIAS QTEMP.CURSRCMBR FOR "' +
+                 %trim(upLib) + '"."' +
+                 %trim(usFile) + '" ("' +
+                 %trim(usName) + '")';
 
-    exec sql execute immediate :sqlCreate;
+    exec sql execute immediate :uwSqlAlias;
     if (sqlcode < 0);
-      iter; // Skip member if locked or inaccessible
+      iter;
     endif;
 
-    // ---------------------------------------------------------------------
-    // 4. Insert Source Lines into Consolidated Repository (EXTRPGPF)
-    // ---------------------------------------------------------------------
-    sqlInsertPf = 'INSERT INTO ' + %trim(peOutLib) + '/' + %trim(peOutFile) +
-                  ' (SRCLIB, SRCFILE, SRCMBR, SRCTYPE, SRCSEQ, SRCDAT, SRCDTA) ' +
-                  'SELECT ''' + %trim(peLib) + ''', ''' +
-                                %trim(srcFile) + ''', ''' +
-                                %trim(srcMbr) + ''', ''' +
-                                %trim(srcType) + ''', ' +
-                  'SRCSEQ, SRCDAT, SRCDTA ' +
-                  'FROM QTEMP.CURSRCMBR';
+    // Insert source lines into consolidated repository
+    uwSqlInsPf = 'INSERT INTO ' + %trim(upOutLib) + '/' + %trim(upOutFile) +
+                 ' (IASRCLIB, IASRCFIL, IASRCMBR, IASRCTYP, ' +
+                 '  IASRCSEQ, IASRCDAT, IASRCDTA) ' +
+                 'SELECT ''' + %trim(upLib) + ''', ''' +
+                               %trim(usFile) + ''', ''' +
+                               %trim(usName) + ''', ''' +
+                               %trim(usType) + ''', ' +
+                 'SRCSEQ, SRCDAT, SRCDTA ' +
+                 'FROM QTEMP.CURSRCMBR';
 
-    exec sql execute immediate :sqlInsertPf;
+    exec sql execute immediate :uwSqlInsPf;
 
-    // ---------------------------------------------------------------------
-    // 5. Line-by-Line Sizing Analysis: Executable vs Non-Executable
-    // ---------------------------------------------------------------------
+    // Fetch and analyze each source line for sizing metrics
     exec sql declare cSrcLines cursor for
       select SRCDTA from QTEMP.CURSRCMBR;
 
@@ -174,101 +156,92 @@ monitor;
 
     if (sqlcode = 0);
       dow (1 = 1);
-        exec sql fetch next from cSrcLines into :srcDta;
+        exec sql fetch next from cSrcLines into :uwSourceData;
         if (sqlcode <> 0);
           leave;
         endif;
 
-        mbrTotLines += 1;
+        uwTotLines += 1;
 
-        if isExecutableLine(srcDta: srcType);
-          mbrExeLines += 1;
+        uwIsExecLine = chkExecutableLine(uwSourceData: usType);
+        if (uwIsExecLine);
+          uwExeLines += 1;
         else;
-          mbrNonExeLines += 1;
+          uwNonExeLines += 1;
         endif;
       enddo;
       exec sql close cSrcLines;
     endif;
 
-    // ---------------------------------------------------------------------
-    // 6. Insert Row into Detail Metrics PF2 (EXTRPGDTL)
-    //    Columns: Library / Source File / Member name / Member type /
-    //             total lines / exec lines / non exec lines
-    // ---------------------------------------------------------------------
-    sqlInsertDtl = 'INSERT INTO ' + %trim(peOutLib) + '/EXTRPGDTL ' +
-                   '(SRCLIB, SRCFILE, SRCMBR, SRCTYPE, TOTLINES, EXELINES, NONEXELIN) ' +
-                   'VALUES (''' + %trim(peLib) + ''', ''' +
-                                 %trim(srcFile) + ''', ''' +
-                                 %trim(srcMbr) + ''', ''' +
-                                 %trim(srcType) + ''', ' +
-                                 %char(mbrTotLines) + ', ' +
-                                 %char(mbrExeLines) + ', ' +
-                                 %char(mbrNonExeLines) + ')';
+    // Write row into PF2 Member Detail Metrics
+    uwSqlInsDtl = 'INSERT INTO ' + %trim(upOutLib) + '/IADTLMETP ' +
+                  '(IASRCLIB, IASRCFIL, IASRCMBR, IASRCTYP, ' +
+                  ' IATOTLIN, IAEXELIN, IANOEXEL) ' +
+                  'VALUES (''' + %trim(upLib) + ''', ''' +
+                                %trim(usFile) + ''', ''' +
+                                %trim(usName) + ''', ''' +
+                                %trim(usType) + ''', ' +
+                                %char(uwTotLines) + ', ' +
+                                %char(uwExeLines) + ', ' +
+                                %char(uwNonExeLines) + ')';
 
-    exec sql execute immediate :sqlInsertDtl;
+    exec sql execute immediate :uwSqlInsDtl;
 
-    // Drop temporary alias
+    // Clean up temporary alias
     exec sql drop alias QTEMP.CURSRCMBR;
 
     // Accumulate library-level totals
-    libMbrCount    += 1;
-    libTotLines    += mbrTotLines;
-    libExeLines    += mbrExeLines;
-    libNonExeLines += mbrNonExeLines;
+    uwLibMbrCount += 1;
+    uwLibTotLines += uwTotLines;
+    uwLibExeLines += uwExeLines;
+    uwLibNonExe   += uwNonExeLines;
 
   enddo;
 
   exec sql close cMbrCatalog;
 
-  // -----------------------------------------------------------------------
-  // 7. Insert Row into Library Summary Metrics PF1 (EXTRPGSUM)
-  //    Columns: Lib name / objcnt / mbrcnt / total lines /
-  //             exec lines / non exec lines
-  // -----------------------------------------------------------------------
-  if (libMbrCount > 0 or libObjCount > 0);
-    sqlInsertSum = 'INSERT INTO ' + %trim(peOutLib) + '/EXTRPGSUM ' +
-                   '(LIBNAME, OBJCNT, MBRCNT, TOTLINES, EXELINES, NONEXELIN) ' +
-                   'VALUES (''' + %trim(peLib) + ''', ' +
-                                 %char(libObjCount) + ', ' +
-                                 %char(libMbrCount) + ', ' +
-                                 %char(libTotLines) + ', ' +
-                                 %char(libExeLines) + ', ' +
-                                 %char(libNonExeLines) + ')';
+  // Write row into PF1 Library Summary Metrics
+  if (uwLibMbrCount > 0 or uwLibObjCount > 0);
+    uwSqlInsSum = 'INSERT INTO ' + %trim(upOutLib) + '/IASUMMETP ' +
+                  '(IALIBNAM, IAOBJCNT, IAMBRCNT, ' +
+                  ' IATOTLIN, IAEXELIN, IANOEXEL) ' +
+                  'VALUES (''' + %trim(upLib) + ''', ' +
+                                %char(uwLibObjCount) + ', ' +
+                                %char(uwLibMbrCount) + ', ' +
+                                %char(uwLibTotLines) + ', ' +
+                                %char(uwLibExeLines) + ', ' +
+                                %char(uwLibNonExe) + ')';
 
-    exec sql execute immediate :sqlInsertSum;
+    exec sql execute immediate :uwSqlInsSum;
   endif;
 
-  // Return totals to caller
-  peMbrCount = libMbrCount;
-  peRecCount = libTotLines;
-  peStatus   = '*OK';
+  // Pass totals back to caller
+  upMbrCount = uwLibMbrCount;
+  upRecCount = uwLibTotLines;
+  upStatus   = '*OK';
 
 on-error;
-  peStatus = '*SYS_ERR';
+  upStatus = '*SYS_ERR';
   return;
 endmon;
 
 *inlr = *on;
 return;
 
-// =========================================================================
-// Procedure   : isEligibleType
-// Description : Determines if source type qualifies for RPG extraction.
-// =========================================================================
-dcl-proc isEligibleType;
-  dcl-pi isEligibleType ind;
-    pSourceType char(10) const;
+// Procedure: chkEligibleType
+dcl-proc chkEligibleType;
+  dcl-pi chkEligibleType ind;
+    upSourceType char(10) const;
   end-pi;
 
-  dcl-s cleanType  varchar(10);
-  dcl-s i          int(10);
-  dcl-c ELIG_COUNT const(6);
-  dcl-s typeList   char(10) dim(ELIG_COUNT) ctdata;
+  dcl-s urEligTypes char(10) dim(6) ctdata;
+  dcl-s uiEligType  packed(4:0)     inz;
+  dcl-s uwCleanType varchar(10)     inz;
 
-  cleanType = %trim(pSourceType);
+  uwCleanType = %trim(upSourceType);
 
-  for i = 1 to ELIG_COUNT;
-    if (cleanType = %trim(typeList(i)));
+  for uiEligType = 1 to %elem(urEligTypes);
+    if (uwCleanType = %trim(urEligTypes(uiEligType)));
       return *on;
     endif;
   endfor;
@@ -276,83 +249,71 @@ dcl-proc isEligibleType;
   return *off;
 end-proc;
 
-// =========================================================================
-// Procedure   : isExecutableLine
-// Description : Evaluates whether a source record represents an executable
-//               statement (C-spec or free-form statement) or non-executable
-//               (comment, blank, directive, or declaration spec).
-// =========================================================================
-dcl-proc isExecutableLine;
-  dcl-pi isExecutableLine ind;
-    pSrcDta  varchar(256) const;
-    pSrcType char(10)     const;
+// Procedure: chkExecutableLine
+dcl-proc chkExecutableLine;
+  dcl-pi chkExecutableLine ind;
+    upSourceData varchar(256) const;
+    upSourceType char(10)      const;
   end-pi;
 
-  dcl-s trimmed varchar(256);
-  dcl-s col6    char(1);
-  dcl-s col7    char(1);
+  dcl-s uwTrimmed varchar(256) inz;
+  dcl-s uwCol6    char(1)      inz;
+  dcl-s uwCol7    char(1)      inz;
 
-  trimmed = %trim(pSrcDta);
+  uwTrimmed = %trim(upSourceData);
 
-  // 1. Blank line -> Non-executable
-  if (trimmed = '');
-    return *off;
-  endif;
+  // Use versatile SELECT block instead of nested IF
+  select;
 
-  // 2. Free-form / Directive comment markers
-  // Line starting with '//' -> Comment
-  if (%len(trimmed) >= 2 and %subst(trimmed: 1: 2) = '//');
-    return *off;
-  endif;
-
-  // Compiler directives (/copy, /include, /free, /end-free, /if, /endif, etc.)
-  if (%len(trimmed) >= 1 and %subst(trimmed: 1: 1) = '/');
-    return *off;
-  endif;
-
-  // Free-form tag line **FREE
-  if (%len(trimmed) >= 6 and %upper(%subst(trimmed: 1: 6)) = '**FREE');
-    return *off;
-  endif;
-
-  // 3. Fixed-Form RPG Evaluation (based on standard column positions)
-  if (%len(pSrcDta) >= 7);
-    col6 = %upper(%subst(pSrcDta: 6: 1));
-    col7 = %subst(pSrcDta: 7: 1);
-
-    // Fixed-form comment has asterisk in column 7
-    if (col7 = '*');
+    // Blank line is non-executable
+    when (uwTrimmed = '');
       return *off;
-    endif;
 
-    // Fixed-form Declarative Specs:
-    // H = Header, F = File, D = Data Def, I = Input, O = Output
-    if (col6 = 'H' or col6 = 'F' or col6 = 'D' or col6 = 'I' or col6 = 'O');
+    // Free-form comment line
+    when (%len(uwTrimmed) >= 2 and %subst(uwTrimmed: 1: 2) = '//');
       return *off;
-    endif;
 
-    // Fixed-form Calculation Spec:
-    // Column 6 = 'C' and column 7 is not '*' -> Executable Calculation Line!
-    if (col6 = 'C');
+    // Compiler directive
+    when (%len(uwTrimmed) >= 1 and %subst(uwTrimmed: 1: 1) = '/');
+      return *off;
+
+    // Fully free-form header tag
+    when (%len(uwTrimmed) >= 6 and %upper(%subst(uwTrimmed: 1: 6)) = '**FREE');
+      return *off;
+
+    // Free-form declaration statement
+    when (%len(uwTrimmed) >= 4 and
+          (%lower(%subst(uwTrimmed: 1: 4)) = 'dcl-' or
+           %lower(%subst(uwTrimmed: 1: 4)) = 'end-' or
+           (%len(uwTrimmed) >= 7 and %lower(%subst(uwTrimmed: 1: 7)) = 'ctl-opt')));
+      return *off;
+
+    // Fixed-form comment line (asterisk in column 7)
+    when (%len(upSourceData) >= 7 and %subst(upSourceData: 7: 1) = '*');
+      return *off;
+
+    // Fixed-form declarative specifications (H, F, D, I, O in column 6)
+    when (%len(upSourceData) >= 6 and
+          (%upper(%subst(upSourceData: 6: 1)) = 'H' or
+           %upper(%subst(upSourceData: 6: 1)) = 'F' or
+           %upper(%subst(upSourceData: 6: 1)) = 'D' or
+           %upper(%subst(upSourceData: 6: 1)) = 'I' or
+           %upper(%subst(upSourceData: 6: 1)) = 'O'));
+      return *off;
+
+    // Fixed-form calculation specification (C in column 6)
+    when (%len(upSourceData) >= 6 and %upper(%subst(upSourceData: 6: 1)) = 'C');
       return *on;
-    endif;
-  endif;
 
-  // 4. Free-form RPG Declarations:
-  // dcl-s, dcl-c, dcl-ds, dcl-pr, dcl-pi, dcl-f, ctl-opt, end-ds, end-pr, end-pi
-  if (%len(trimmed) >= 4);
-    if (%lower(%subst(trimmed: 1: 4)) = 'dcl-' or
-        %lower(%subst(trimmed: 1: 4)) = 'end-' or
-        (%len(trimmed) >= 7 and %lower(%subst(trimmed: 1: 7)) = 'ctl-opt'));
-      return *off;
-    endif;
-  endif;
+    // Default: Free-form operational code (executable)
+    other;
+      return *on;
 
-  // 5. Default: Free-form operational code (eval, if, dow, exec sql, chain, etc.)
-  return *on;
+  endsl;
+
 end-proc;
 
-**CTDATA typeList
+**CTDATA urEligTypes
 RPGLE
 SQLRPGLE
 RPG
