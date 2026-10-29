@@ -1,0 +1,15 @@
+     A* =================================================================
+     A* File Name   : EXTRPGSUM (PF1)
+     A* Description : Library Summary Metrics Physical File
+     A* Format Name : EXTRPGSUMR
+     A* Author      : IBM i Extraction Utility Team
+     A* Columns     : Lib name / objcnt / mbrcnt / total lines / 
+     A*               exec lines / non exec lines
+     A* =================================================================
+     A          R EXTRPGSUMR                TEXT('Library Summary Metrics')
+     A            LIBNAME       10A         COLHDG('Library' 'Name')
+     A            OBJCNT        10S 0       COLHDG('Source' 'Object' 'Count')
+     A            MBRCNT        10S 0       COLHDG('Member' 'Count')
+     A            TOTLINES      10S 0       COLHDG('Total' 'Lines')
+     A            EXELINES      10S 0       COLHDG('Executable' 'Lines')
+     A            NONEXELIN     10S 0       COLHDG('Non-Exec' 'Lines')

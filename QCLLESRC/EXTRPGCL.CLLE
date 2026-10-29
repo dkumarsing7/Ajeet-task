@@ -4,13 +4,13 @@
 /* Language     : ILE CL (CLLE)                                              */
 /* Author       : IBM i Extraction Utility Team                              */
 /*                                                                           */
-/* Responsibilities:                                                         */
-/* 1. Resolves output library (*CURLIB -> current job library or QGPL).      */
-/* 2. Verifies output physical file exists and handles CLEAR(*YES).          */
-/* 3. Coordinates independent extraction loop for each specified library.    */
-/* 4. Executes DSPFD to extract member catalog into QTEMP/QAFDMBL.           */
-/* 5. Invokes RPGLE extraction engine (EXTRPGRG) per library.                */
-/* 6. Formats and sends summary completion report.                           */
+/* Key Features:                                                             */
+/* 1. Generates permanent member catalog in &OUTLIB named after &CURLIB      */
+/*    (e.g., &OUTLIB/ERP, &OUTLIB/HR, etc.).                                 */
+/* 2. Verifies and initializes Summary PF1 (EXTRPGSUM) and Detail PF2       */
+/*    (EXTRPGDTL).                                                           */
+/* 3. Coordinates extraction and metric computation with EXTRPGRG per library*/
+/* 4. Outputs consolidated source lines into &OUTLIB/&OUTFILE (EXTRPGPF).    */
 /* ========================================================================= */
 
              PGM        PARM(&LIBLIST &OUTLIB_IN &OUTFILE &CLEAR)
@@ -68,32 +68,55 @@
              ELSE       CMD(CHGVAR VAR(&OUTLIB) VALUE(&OUTLIB_IN))
 
              /* ----------------------------------------------------------- */
-             /* 2. Verify Output Physical File Exists                        */
+             /* 2. Verify Output Physical Files Exist                        */
              /* ----------------------------------------------------------- */
+             /* Verify Source Consolidated PF */
              CHKOBJ     OBJ(&OUTLIB/&OUTFILE) OBJTYPE(*FILE)
              MONMSG     MSGID(CPF9801) EXEC(DO)
                 CHGVAR     VAR(&MSGDTA) VALUE('Output file ' *CAT &OUTFILE *TCAT +
                              ' not found in library ' *CAT &OUTLIB *TCAT +
-                             '. Please create it using CRTPF or RUNSQLSTM first.')
+                             '. Please create it using CRTPF or RUNSQLSTM.')
+                SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                             MSGTYPE(*ESCAPE)
+             ENDDO
+
+             /* Verify Summary Metrics PF1 (EXTRPGSUM) */
+             CHKOBJ     OBJ(&OUTLIB/EXTRPGSUM) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                CHGVAR     VAR(&MSGDTA) VALUE('Summary file EXTRPGSUM not found in ' +
+                             *CAT &OUTLIB *TCAT '. Please create it using CRTPF.')
+                SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                             MSGTYPE(*ESCAPE)
+             ENDDO
+
+             /* Verify Detail Metrics PF2 (EXTRPGDTL) */
+             CHKOBJ     OBJ(&OUTLIB/EXTRPGDTL) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                CHGVAR     VAR(&MSGDTA) VALUE('Detail file EXTRPGDTL not found in ' +
+                             *CAT &OUTLIB *TCAT '. Please create it using CRTPF.')
                 SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
                              MSGTYPE(*ESCAPE)
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* 3. Handle CLEAR(*YES)                                        */
+             /* 3. Handle CLEAR(*YES) Across Output Tables                   */
              /* ----------------------------------------------------------- */
              IF         COND(&CLEAR = '*YES') THEN(DO)
+                /* Clear Source Records PF */
                 CLRPFM     FILE(&OUTLIB/&OUTFILE)
-                MONMSG     MSGID(CPF3141) /* Member empty or already clear */
-                MONMSG     MSGID(CPF0000) EXEC(DO)
-                   CHGVAR     VAR(&MSGDTA) VALUE('Failed to clear output file ' +
-                                *CAT &OUTLIB *TCAT '/' *CAT &OUTFILE *TCAT '.')
-                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
-                                MSGTYPE(*ESCAPE)
-                ENDDO
+                MONMSG     MSGID(CPF3141 CPF0000)
+
+                /* Clear Summary Metrics PF1 */
+                CLRPFM     FILE(&OUTLIB/EXTRPGSUM)
+                MONMSG     MSGID(CPF3141 CPF0000)
+
+                /* Clear Detail Metrics PF2 */
+                CLRPFM     FILE(&OUTLIB/EXTRPGDTL)
+                MONMSG     MSGID(CPF3141 CPF0000)
+
                 SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                             MSGDTA('Output file ' *CAT &OUTLIB *TCAT '/' *CAT +
-                             &OUTFILE *TCAT ' cleared.') MSGTYPE(*INFO)
+                             MSGDTA('Output files in ' *CAT &OUTLIB *TCAT +
+                             ' cleared for fresh extraction.') MSGTYPE(*INFO)
              ENDDO
 
              /* ----------------------------------------------------------- */
@@ -114,15 +137,18 @@
                 CHGVAR     VAR(&RET_STAT) VALUE('          ')
 
                 /* -------------------------------------------------------- */
-                /* Step 4a: Extract member catalog into QTEMP/QAFDMBL       */
+                /* Step 4a: Extract member catalog into &OUTLIB/&CURLIB     */
                 /* -------------------------------------------------------- */
-                DLTF       FILE(QTEMP/QAFDMBL)
-                MONMSG     MSGID(CPF2105) /* Object not found in QTEMP is normal */
+                /* If CLEAR(*YES), remove any old outfile for this library */
+                IF         COND(&CLEAR = '*YES') THEN(DO)
+                   DLTF       FILE(&OUTLIB/&CURLIB)
+                   MONMSG     MSGID(CPF2105)
+                ENDDO
 
+                /* Generate permanent member list in &OUTLIB named after &CURLIB */
                 DSPFD      FILE(&CURLIB/*ALL) TYPE(*MBRLIST) OUTPUT(*OUTFILE) +
-                             OUTFILE(QTEMP/QAFDMBL) OUTMBR(*FIRST *REPLACE)
+                             OUTFILE(&OUTLIB/&CURLIB) OUTMBR(*FIRST *REPLACE)
                 MONMSG     MSGID(CPF3012 CPF3014 CPF3033) EXEC(DO)
-                   /* Library contains no database files or no members */
                    SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
                                 MSGDTA('Library ' *CAT &CURLIB *TCAT +
                                 ' contains no eligible database members.') +
@@ -132,14 +158,14 @@
                 ENDDO
                 MONMSG     MSGID(CPF0000) EXEC(DO)
                    SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                                MSGDTA('Error inspecting file members in library ' +
+                                MSGDTA('Error listing members in library ' +
                                 *CAT &CURLIB *TCAT '.') MSGTYPE(*DIAG)
                    CHGVAR     VAR(&LIBS_ERR) VALUE(&LIBS_ERR + 1)
                    GOTO       CMDLBL(NEXTLIB)
                 ENDDO
 
                 /* -------------------------------------------------------- */
-                /* Step 4b: Invoke RPGLE Extraction Engine                  */
+                /* Step 4b: Invoke RPGLE Extraction & Metrics Engine        */
                 /* -------------------------------------------------------- */
                 CALL       PGM(EXTRPGRG) PARM(&CURLIB &OUTLIB &OUTFILE +
                              &RET_MBRS &RET_RECS &RET_STAT)
@@ -163,7 +189,8 @@
                                 MSGDTA('Library ' *CAT &CURLIB *TCAT +
                                 ': Extracted ' *CAT %CHAR(&RET_MBRS) *TCAT +
                                 ' members (' *CAT %CHAR(&RET_RECS) *TCAT +
-                                ' records).') MSGTYPE(*INFO)
+                                ' records). Catalog in ' *CAT &OUTLIB *TCAT +
+                                '/' *CAT &CURLIB *TCAT '.') MSGTYPE(*INFO)
                 ENDDO
                 ELSE       CMD(DO)
                    CHGVAR     VAR(&LIBS_ERR) VALUE(&LIBS_ERR + 1)
@@ -177,13 +204,7 @@
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* 5. Clean up temporary files in QTEMP                        */
-             /* ----------------------------------------------------------- */
-             DLTF       FILE(QTEMP/QAFDMBL)
-             MONMSG     MSGID(CPF0000)
-
-             /* ----------------------------------------------------------- */
-             /* 6. Send Final Summary Completion Message                    */
+             /* 5. Send Final Summary Completion Message                    */
              /* ----------------------------------------------------------- */
              CHGVAR     VAR(&CHAR_OK)   VALUE(%CHAR(&LIBS_OK))
              CHGVAR     VAR(&CHAR_ERR)  VALUE(%CHAR(&LIBS_ERR))
@@ -193,8 +214,8 @@
              CHGVAR     VAR(&SUMMARY) VALUE('EXTRPGSRC completed. Libraries OK: ' +
                           *CAT &CHAR_OK *TCAT ', Failed: ' *CAT &CHAR_ERR *TCAT +
                           '. Extracted ' *CAT &CHAR_MBRS *TCAT ' members (' *CAT +
-                          &CHAR_RECS *TCAT ' records) into ' *CAT &OUTLIB *TCAT +
-                          '/' *CAT &OUTFILE *TCAT '.')
+                          &CHAR_RECS *TCAT ' records). Output in ' *CAT +
+                          &OUTLIB *TCAT ' (EXTRPGPF, EXTRPGSUM, EXTRPGDTL).')
 
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&SUMMARY) +
                           MSGTYPE(*COMP)

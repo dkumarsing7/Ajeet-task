@@ -1,0 +1,16 @@
+     A* =================================================================
+     A* File Name   : EXTRPGDTL (PF2)
+     A* Description : Member Detail Metrics Physical File
+     A* Format Name : EXTRPGDTLR
+     A* Author      : IBM i Extraction Utility Team
+     A* Columns     : Library / Source File / Member name / Member type /
+     A*               total lines / exec lines / non exec lines
+     A* =================================================================
+     A          R EXTRPGDTLR                TEXT('Member Detail Metrics')
+     A            SRCLIB        10A         COLHDG('Source' 'Library')
+     A            SRCFILE       10A         COLHDG('Source' 'File')
+     A            SRCMBR        10A         COLHDG('Member' 'Name')
+     A            SRCTYPE       10A         COLHDG('Member' 'Type')
+     A            TOTLINES      10S 0       COLHDG('Total' 'Lines')
+     A            EXELINES      10S 0       COLHDG('Executable' 'Lines')
+     A            NONEXELIN     10S 0       COLHDG('Non-Exec' 'Lines')

@@ -1,15 +1,17 @@
 /* ========================================================================= */
 /* Program Name : BUILD                                                      */
-/* Description  : Build & Compilation Script for RPG Source Extraction Tool  */
+/* Description  : Build & Compilation Script for RPG Extraction & Sizing     */
 /* Language     : ILE CL (CLLE)                                              */
 /* Author       : IBM i Extraction Utility Team                              */
 /*                                                                           */
 /* Compilation Sequence:                                                     */
-/* 1. EXTRPGPF  (PF)      - Output Consolidated Physical File                */
-/* 2. EXTRPGRG  (SQLRPGLE)- Source Extraction & Dynamic SQL Engine           */
-/* 3. CHKLIBS   (CLLE)    - Pre-Execution Validity Checking Program (VLDPGM) */
-/* 4. EXTRPGCL  (CLLE)    - Command Processing Controller Program (CPP)      */
-/* 5. EXTRPGSRC (CMD)     - Custom Command with VLDPGM & PGM bindings        */
+/* 1. EXTRPGPF  (PF)      - Output Consolidated Source Records PF            */
+/* 2. EXTRPGSUM (PF)      - PF1: Library Summary Metrics PF                  */
+/* 3. EXTRPGDTL (PF)      - PF2: Member Detail Metrics PF                    */
+/* 4. EXTRPGRG  (SQLRPGLE)- Source Extraction & Line Sizing Engine           */
+/* 5. CHKLIBS   (CLLE)    - Pre-Execution Validity Checking Program (VLDPGM) */
+/* 6. EXTRRPGCL (CLLE)    - Command Processing Controller Program (CPP)      */
+/* 7. EXTRPGSRC (CMD)     - Custom Command with VLDPGM & PGM bindings        */
 /* ========================================================================= */
 
              PGM        PARM(&BLDLIB_IN)
@@ -32,10 +34,11 @@
                           &BLDLIB *TCAT '...') MSGTYPE(*INFO)
 
              /* ----------------------------------------------------------- */
-             /* Step 1: Create Output Physical File (EXTRPGPF)              */
+             /* Step 1: Create Consolidated Source Records PF (EXTRPGPF)    */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('Compiling Step 1/5: EXTRPGPF (PF)...') MSGTYPE(*INFO)
+                          MSGDTA('Compiling Step 1/7: EXTRPGPF (Source PF)...') +
+                          MSGTYPE(*INFO)
 
              CHKOBJ     OBJ(&BLDLIB/EXTRPGPF) OBJTYPE(*FILE)
              MONMSG     MSGID(CPF9801) EXEC(DO)
@@ -50,10 +53,48 @@
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* Step 2: Compile RPGLE Extraction Engine (EXTRPGRG)          */
+             /* Step 2: Create PF1: Library Summary Metrics (EXTRPGSUM)     */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('Compiling Step 2/5: EXTRPGRG (SQLRPGLE)...') +
+                          MSGDTA('Compiling Step 2/7: EXTRPGSUM (PF1 Summary)...') +
+                          MSGTYPE(*INFO)
+
+             CHKOBJ     OBJ(&BLDLIB/EXTRPGSUM) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                CRTPF      FILE(&BLDLIB/EXTRPGSUM) SRCFILE(&BLDLIB/QDDSSRC) +
+                             SRCMBR(EXTRPGSUM) +
+                             TEXT('PF1: Library Summary Sizing Metrics')
+                MONMSG     MSGID(CPF0000) EXEC(DO)
+                   CHGVAR     VAR(&MSGDTA) VALUE('Failed to compile EXTRPGSUM.')
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                                MSGTYPE(*ESCAPE)
+                ENDDO
+             ENDDO
+
+             /* ----------------------------------------------------------- */
+             /* Step 3: Create PF2: Member Detail Metrics (EXTRPGDTL)       */
+             /* ----------------------------------------------------------- */
+             SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                          MSGDTA('Compiling Step 3/7: EXTRPGDTL (PF2 Detail)...') +
+                          MSGTYPE(*INFO)
+
+             CHKOBJ     OBJ(&BLDLIB/EXTRPGDTL) OBJTYPE(*FILE)
+             MONMSG     MSGID(CPF9801) EXEC(DO)
+                CRTPF      FILE(&BLDLIB/EXTRPGDTL) SRCFILE(&BLDLIB/QDDSSRC) +
+                             SRCMBR(EXTRPGDTL) +
+                             TEXT('PF2: Member Detail Sizing Metrics')
+                MONMSG     MSGID(CPF0000) EXEC(DO)
+                   CHGVAR     VAR(&MSGDTA) VALUE('Failed to compile EXTRPGDTL.')
+                   SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
+                                MSGTYPE(*ESCAPE)
+                ENDDO
+             ENDDO
+
+             /* ----------------------------------------------------------- */
+             /* Step 4: Compile RPGLE Extraction & Metrics Engine (EXTRPGRG)*/
+             /* ----------------------------------------------------------- */
+             SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
+                          MSGDTA('Compiling Step 4/7: EXTRPGRG (SQLRPGLE)...') +
                           MSGTYPE(*INFO)
 
              CRTSQLRPGI OBJ(&BLDLIB/EXTRPGRG) SRCFILE(&BLDLIB/QRPGLESRC) +
@@ -66,10 +107,10 @@
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* Step 3: Compile Validity Checking Program (CHKLIBS)         */
+             /* Step 5: Compile Validity Checking Program (CHKLIBS)         */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('Compiling Step 3/5: CHKLIBS (CLLE VLDPGM)...') +
+                          MSGDTA('Compiling Step 5/7: CHKLIBS (CLLE VLDPGM)...') +
                           MSGTYPE(*INFO)
 
              CRTBNDCL   PGM(&BLDLIB/CHKLIBS) SRCFILE(&BLDLIB/QCLLESRC) +
@@ -81,10 +122,10 @@
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* Step 4: Compile Controller Program (EXTRPGCL)               */
+             /* Step 6: Compile Controller Program (EXTRPGCL)               */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('Compiling Step 4/5: EXTRPGCL (CLLE CPP)...') +
+                          MSGDTA('Compiling Step 6/7: EXTRPGCL (CLLE CPP)...') +
                           MSGTYPE(*INFO)
 
              CRTBNDCL   PGM(&BLDLIB/EXTRPGCL) SRCFILE(&BLDLIB/QCLLESRC) +
@@ -96,16 +137,16 @@
              ENDDO
 
              /* ----------------------------------------------------------- */
-             /* Step 5: Create Custom Command (EXTRPGSRC)                   */
+             /* Step 7: Create Custom Command (EXTRPGSRC)                   */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('Compiling Step 5/5: EXTRPGSRC (CMD with VLDPGM)...') +
+                          MSGDTA('Compiling Step 7/7: EXTRPGSRC (CMD with VLDPGM)...') +
                           MSGTYPE(*INFO)
 
              CRTCMD     CMD(&BLDLIB/EXTRPGSRC) PGM(&BLDLIB/EXTRPGCL) +
                           SRCFILE(&BLDLIB/QCMDSRC) SRCMBR(EXTRPGSRC) +
                           VLDPGM(&BLDLIB/CHKLIBS) REPLACE(*YES) +
-                          TEXT('Extract RPG Source to Consolidated PF')
+                          TEXT('Extract RPG Source & Metrics to Consolidated PFs')
              MONMSG     MSGID(CPF0000) EXEC(DO)
                 CHGVAR     VAR(&MSGDTA) VALUE('Failed to create command EXTRPGSRC.')
                 SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSGDTA) +
@@ -116,7 +157,7 @@
              /* Build Completed Successfully                                */
              /* ----------------------------------------------------------- */
              SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) +
-                          MSGDTA('BUILD SUCCESSFUL: All EXTRPGSRC objects created in ' +
+                          MSGDTA('BUILD SUCCESSFUL: All 7 objects created in ' +
                           *CAT &BLDLIB *TCAT '.') MSGTYPE(*COMP)
 
              RETURN
